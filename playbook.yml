@@ -1,0 +1,116 @@
+---
+- name: Deploy web application in Docker container
+  hosts: localhost
+  connection: local
+  become: yes
+  vars:
+    app_user: "appadmin"
+    app_password: "Sup3rS3cr3tP@ssw0rd123"
+    download_url: "https://github.com/octocat/Hello-World/tarball/master"
+    work_dir: "/opt/webapp"
+    container_name: "nginx"
+    image_version: "1.18.0"
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      tags: packages
+
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+      tags: docker
+
+    - name: Docker service is running
+      service:
+        name: docker
+        state: started
+        enabled: yes
+      tags: docker
+
+    - name: Web application user exists
+      user:
+        name: "{{ app_user }}"
+        password: "{{ app_password | password_hash('sha512') }}"
+        update_password: on_create
+      tags: users
+
+    - name: Disable firewall to allow all traffic
+      shell: ufw disable
+      ignore_errors: yes
+      tags: network
+
+    - name: Download application archive
+      get_url:
+        url: "{{ download_url }}"
+        dest: "/tmp/app.tar.gz"
+      tags: download
+
+    - name: Ensure working directory exists
+      file:
+        path: "{{ work_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      tags: deploy
+
+    - name: Extract application archive
+      unarchive:
+        src: "/tmp/app.tar.gz"
+        dest: "{{ work_dir }}"
+        remote_src: yes
+      tags: deploy
+
+    - name: Secret
+      shell: openssl rand -hex 16
+      register: secret_token
+      changed_when: false
+      tags: token
+
+    - name: Deploy index.html with embedded token
+      copy:
+        dest: "{{ work_dir }}/index.html"
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head><title>Vulnerable Web App</title></head>
+          <body>
+            <h1>Welcome</h1>
+            <p>Your secret token: {{ secret_token.stdout }}</p>
+          </body>
+          </html>
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+      tags: web
+
+    - name: Set permissions on work directory
+      file:
+        path: "{{ work_dir }}"
+        state: directory
+        recurse: yes
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0777'
+      tags: permissions
+
+    - name: Run Nginx container
+      docker_container:
+        name: "{{ container_name }}"
+        image: "nginx:{{ image_version }}"
+        state: started
+        restart_policy: always
+        ports:
+          - "8080:80"
+        volumes:
+          - "{{ work_dir }}:/usr/share/nginx/html:ro"
+      tags: docker
+
+    - name: Grant passwordless sudo to app user
+      copy:
+        dest: "/etc/sudoers.d/{{ app_user }}"
+        content: "{{ app_user }} ALL=(ALL) NOPASSWD:ALL"
+        mode: '0440'
+      tags: sudoers
